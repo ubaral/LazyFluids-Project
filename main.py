@@ -58,16 +58,10 @@ for i in range(N):
     # linear equations, Ax = b. Removed previous energy for
     pass
 
-
-
-
-
-
-
 # save the image
 #fname = 'output.jpg'
 #skio.imsave(fname, im)
 
 # display the image
-skio.imshow(im)
+skio.imshow(Z_src)
 skio.show()
