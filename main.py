@@ -71,6 +71,8 @@ for i in range(N):
     # Follow rest of algorithm (1) in the paper:
     # Compute the nearest neighbors of updated_image
     # Maybe use some efficient library for the nearest neighbors computation?
+    # **NOTE** Remember that LazyFluids reverses the direction of the NNF retreival:
+    # That is, for each source patch, z_p we find a target patch x_q that has minimal distance.
     updated_neighbors = nearest_neighbors(updated_image, Z_src)
     # If updated neighbors is the same as current neighbors, then exit the loop and set the output image to the
     # updated image
