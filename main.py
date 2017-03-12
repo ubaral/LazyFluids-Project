@@ -33,13 +33,13 @@ def nearest_neighbors(X, Z):
 imname = 'texture.jpg'
 # read in the image
 Z_src = skio.imread(imname)
-z_flat_r = Z_src[:,:,0]
-z_flat_g = Z_src[:,:,1]
-z_flat_b = Z_src[:,:,2]
+Z_flat = Z_src.reshape((Z_src[:, :, 0].size, 3))
 
 nbhd_width = 31  # make sure odd, so there can be a center nbhd point, or else stupid annoying bug might occur
 
-out = np.ndarray((200, 200, 3))
+out = np.zeros((200, 200, 3), dtype=np.uint8)
+out_flat = out.reshape((out[:, :, 0].size, 3))
+
 assert (nbhd_width % 2 == 1)  # needs to be odd or else potential bugs
 # Create the set of points that are the centers of the neighborhoods we will be comparing
 x_centers = set(np.arange(nbhd_width // 2, out.shape[0] - nbhd_width // 2, nbhd_width // 4))
@@ -65,8 +65,8 @@ for patch in current_neighbors:
 
 N = 1  # number of iterations
 for i in range(N):
-    diags = np.zeros(out[:, :, 0].size)  # just the diagonals of the matrix A
-    b = np.zeros(out[:, :, 0].size)  # vector b on the RHS of matrix equation Ax = b
+    diags = np.zeros(out_flat.shape)  # just the diagonals of the matrix A
+    b = np.zeros(out_flat.shape)  # vector b on the RHS of matrix equation Ax = b
 
     # For each output patch, loop through each pixel in the input patch and NN-output patch, and increment the entry
     # along the diagonal of matrix A corresponding to the output patch pixel's index in the full size output image
@@ -79,7 +79,7 @@ for i in range(N):
         indices = get_nbhd(out.shape, patch, nbhd_width)
         z_ind = get_nbhd(Z_src.shape, current_neighbors[patch], nbhd_width)
 
-        z_pixels = Z_src_r.flatten()[z_ind]
+        z_pixels = Z_flat[z_ind]
         # update the b vector
         # increment the diagonals of A
         diags[indices] += 1
@@ -91,7 +91,10 @@ for i in range(N):
             print("out patch shape: {0}", indices.shape)
             print("source patch shape: {0}", z_ind.shape)
             exit()
-    updated_image = scipy.sparse.linalg.spsolve(scipy.sparse.diags(diags, 'csr'), b)
+
+    A = scipy.sparse.spdiags(diags.flatten('F'), 0, 3*out_flat.shape[0], 3*out_flat.shape[0], 'csr')
+    flattened_sol = scipy.sparse.linalg.spsolve(A, b.flatten('F'))
+    updated_image = flattened_sol.reshape(b.shape, order='F').reshape(out.shape).astype(np.uint8)
 
     # Follow rest of algorithm (1) in the paper:
     # Compute the nearest neighbors of updated_image
@@ -99,7 +102,8 @@ for i in range(N):
     # **NOTE** Remember that LazyFluids reverses the direction of the NNF retreival:
     # That is, for each source patch, z_p we find a target patch x_q that has minimal distance.
     updated_neighbors = nearest_neighbors(updated_image, Z_src)
-    out = updated_image.reshape(out[:,:,0].shape)
+
+    out = updated_image
     # If updated neighbors is the same as current neighbors, then exit the loop and set the output image to the
     # updated image
 
