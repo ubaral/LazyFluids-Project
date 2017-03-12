@@ -45,7 +45,7 @@ def separate_boundaries(alpha_file_name, blur_r, opacity_l, opacity_u):
     opacity_l: lower opacity limit for boundary (float, 0-1)
     opacity_u: upper opacity limit for boundary (float, 0-1)
   Returns:
-
+    boundaries: boundary object, allowing retrieval of the boundary blur mask and boundary/inner in image or list form
   """
   # read input file
   alpha = skio.imread(alpha_file_name)
