@@ -6,12 +6,17 @@ from sklearn.neighbors import NearestNeighbors
 
 
 class Patch:
-    def __init__(self, img_shape, center, width=31):
-        # self.from_src = is_Z
+    def __init__(self, is_Z, img_shape, center, width=31):
+        self.is_src = is_Z
         self.im_shape = img_shape
         self.center_pix_loc = center
         self.width = 31
-        self.nn_patch = None  # The nn patch of the other image
+
+        if self.is_src:
+            self.nn_patch = list()  # list of patches if src patch
+        else:
+            self.nn_patch = None
+
         self.pixel_indices = None
         self.set_nbhd()
 
@@ -31,11 +36,16 @@ class Patch:
                                                  np.array([(i, j) for i in slices[0] for j in slices[1]])).astype(int)
 
     def set_nn(self, other_patch):
-        self.nn_patch = other_patch
-        other_patch.nn_path = self
+        assert (other_patch.is_src != self.is_src)
+        if self.is_src:
+            self.nn_patch.append(other_patch)
+            other_patch.nn_patch = self
+        else:
+            self.nn_patch = other_patch
+            other_patch.nn_patch.append(self)
 
 
-def construct_nbhds(im_shape, nbhd_w):
+def construct_nbhds(is_src, im_shape, nbhd_w):
     x_centers = set(np.arange(nbhd_w // 2, im_shape[0] - nbhd_w // 2, nbhd_w // 4))
     x_centers.add(im_shape[0] - nbhd_w // 2 - 1)  # make sure to cover every output pixel
 
@@ -44,7 +54,7 @@ def construct_nbhds(im_shape, nbhd_w):
 
     # Cartesian product of the x and y partitions
     prod = np.transpose([np.tile(list(x_centers), len(y_centers)), np.repeat(list(y_centers), len(x_centers))])
-    return [Patch(im_shape, coord, nbhd_w) for coord in [tuple(prod[i]) for i in range(len(prod))]]
+    return [Patch(is_src, im_shape, coord, nbhd_w) for coord in [tuple(prod[i]) for i in range(len(prod))]]
 
 
 def main(nbhd_width=31, src_texture='texture.jpg'):
@@ -74,11 +84,11 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
     out_alpha = out_alpha.reshape((out_alpha.shape[0], out_alpha.shape[1], 1))
 
     out = np.append(out, out_alpha, 2)
-    #out_flat = out.reshape((out[:, :, 0].size, 4))
+    # out_flat = out.reshape((out[:, :, 0].size, 4))
 
-    X_patches = construct_nbhds(out.shape, nbhd_width)
-    Z_patches = construct_nbhds(Z_src.shape, nbhd_width)
-
+    X_patches = construct_nbhds(False, out.shape, nbhd_width)
+    Z_patches = construct_nbhds(True, Z_src.shape, nbhd_width)
+    K = len(X_patches) // len(Z_patches)
     # Init nearest neighbors to random source patches
     for patch in X_patches:
         patch.set_nn(np.random.choice(Z_patches, 1)[0])
@@ -88,13 +98,14 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
     for k in range(len(Z_patches)):
         Z_patches_for_NN_query[k] = Z_flat[Z_patches[k].pixel_indices]
 
-    Z_patches_for_NN_query = Z_patches_for_NN_query.reshape((Z_patches_for_NN_query.shape[0], Z_patches_for_NN_query.shape[1] * Z_patches_for_NN_query.shape[2]), order='F')
+    Z_patches_for_NN_query = Z_patches_for_NN_query.reshape(
+        (Z_patches_for_NN_query.shape[0], Z_patches_for_NN_query.shape[1] * Z_patches_for_NN_query.shape[2]), order='F')
 
     N = 20  # number of iterations
     for i in range(N):
         print("iteration: {0}".format(i))
-        diags = np.zeros((out.shape[0]*out.shape[1], 4))  # just the diagonals of the matrix A
-        b = np.zeros((out.shape[0]*out.shape[1], 4))  # vector b on the RHS of matrix equation Ax = b
+        diags = np.zeros((out.shape[0] * out.shape[1], 4))  # just the diagonals of the matrix A
+        b = np.zeros((out.shape[0] * out.shape[1], 4))  # vector b on the RHS of matrix equation Ax = b
 
         # For each output patch, loop through each pixel in the input patch and NN-output patch, and increment the entry
         # along the diagonal of matrix A corresponding to the output patch pixel's index in the full size output image
@@ -107,7 +118,8 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
             # update the b vector
             b[x_patch.pixel_indices] += z_pixels
 
-        A = scipy.sparse.spdiags(diags.flatten('F'), 0, 4 * out.shape[0]*out.shape[1], 4 * out.shape[0]*out.shape[1], 'csr')
+        A = scipy.sparse.spdiags(diags.flatten('F'), 0, 4 * out.shape[0] * out.shape[1],
+                                 4 * out.shape[0] * out.shape[1], 'csr')
         flattened_sol = scipy.sparse.linalg.spsolve(A, b.flatten('F'))
         updated_image = flattened_sol.reshape(b.shape, order='F').reshape(out.shape).astype(np.uint8)
 
@@ -120,27 +132,53 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
         # Fit a nn field to the new updated image space
         NNF = np.ndarray((len(X_patches), nbhd_width ** 2, 4), dtype=np.uint8)  # NN to fit scipy library
         for k in range(len(X_patches)):
+            X_patches[k].nn_patch = None
             NNF[k] = updated_image.reshape((updated_image[:, :, 0].size, 4))[X_patches[k].pixel_indices]
 
         NNF = NNF.reshape((NNF.shape[0], NNF.shape[1] * NNF.shape[2]), order='F')
-        nbrs = NearestNeighbors(n_neighbors=2, algorithm='auto', metric=dist_metric).fit(NNF)
+        nbrs = NearestNeighbors(n_neighbors=NNF.shape[0], algorithm='auto', metric=dist_metric).fit(NNF)
 
         # Find the nearest neighbors in the updated output image space for each patch Z
         distances, indices = nbrs.kneighbors(Z_patches_for_NN_query)
 
-        for k in range(len(Z_patches)):
-            Z_patches[k].set_nn(X_patches[indices[k, 0]])
+        for p in Z_patches:
+            p.nn_patch = []
+        # Basic Patch Counting algorithm. Should improve the results, but need to fix, since we loop through the
+        # source patches in the same order every time, instead of resolving collisions by choosing the patch map which
+        # has the smallest distance
+        R = len(X_patches) % len(Z_patches)
+        # while there are still unassigned patches in the output image
+        while np.sum([1 if xpatch.nn_patch is None else 0 for xpatch in X_patches]) > 0:
+            # Assigning NNs to patches of the source image
+            for k in range(len(Z_patches)):
+                if len(Z_patches[k].nn_patch) < K:
+                    # the nn query is already sorted by distances
+                    for j in range(NNF.shape[0]):
+                        # Loop until we find an unused X patch
+                        if X_patches[indices[k, j]].nn_patch is None:
+                            Z_patches[k].set_nn(X_patches[indices[k, j]])
+                            break
+
+                elif len(Z_patches[k].nn_patch) == K and R > 0:
+                    # the nn query is already sorted by distances
+                    for j in range(NNF.shape[0]):
+                        # Loop until we find an unused X patch
+                        if X_patches[indices[k, j]].nn_patch is None:
+                            Z_patches[k].set_nn(X_patches[indices[k, j]])
+                            R -= 1
+                            break
 
         out = updated_image
         # If updated neighbors is the same as current neighbors, then exit the loop and set the output image to the
         # updated image
 
     # save the image
-    # fname = 'output.jpg'
-    # skio.imsave(fname, im)
+    fname = 'output.jpg'
+    skio.imsave(fname, out)
 
     # display the image
     skio.imshow(out)
     skio.show()
+
 
 main()
