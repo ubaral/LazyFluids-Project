@@ -3,7 +3,7 @@ import skimage as sk
 import skimage.filters as skf
 import skimage.io as skio
 
-class boundaries(object):
+class boundary(object):
   """extracts useful boundary features from images
   note: we add things like methods to retrieve neighbourhoods here as well if necessary
   """
@@ -36,7 +36,7 @@ class boundaries(object):
   inner_list = property(get_inner_list)
 
 
-def separate_boundaries(alpha_file_name, blur_r, opacity_l, opacity_u):
+def separate_boundaries(alpha_file_name, blur_r):
   """Separates boundary of image
 
   Args:
@@ -48,32 +48,37 @@ def separate_boundaries(alpha_file_name, blur_r, opacity_l, opacity_u):
     boundaries: boundary object, allowing retrieval of the boundary blur mask and boundary/inner in image or list form
   """
   # read input file
-  alpha = skio.imread(alpha_file_name)
+  alpha = skio.imread(alpha_file_name, as_grey=True)
   # gaussian blur
-  blur_alpha = skf.gaussian(image=alpha, sigma=blur_r, multichannel=False)
+  blur_alpha = (255*skf.gaussian(image=alpha, sigma=blur_r, multichannel=False)).astype(np.uint8)
+  blur_alpha[blur_alpha > 255] = 255
+  skio.imshow(blur_alpha) # example for getting boundary images
   # getting separate boundary and inner images and lists
   width = len(alpha)
   height = len(alpha[0])
-  boundary_image = np.zeros(shape=(width, height, 3))
+  boundary_image = np.zeros(shape=(width, height))
   boundary_list = []
-  inner_image = np.zeros(shape=(width, height, 3))
+  inner_image = np.zeros(shape=(width, height))
   inner_list = []
+
   for x in range(width):
     for y in range(height):
-      p = blur_alpha[x][y][0]
+      p = blur_alpha[x][y]
       # getting boundary pixels
-      if p >= opacity_u or p <= opacity_l:
-        boundary_image[x][y] = np.array([1, 1, 1])
+      if p >= 2 and p <= 253:
+        boundary_image[x][y] = 255
         boundary_list.append((x, y))
       # getting inner pixels
-      if p >= opacity_l:
-        inner_image[x][y] = np.array([1, 1, 1])
+      if p >= 2:
+        inner_image[x][y] = 255
         inner_list.append((x, y))
-  return boundaries(blur_alpha, boundary_image, boundary_list, inner_image, inner_list)
+  inner_image = inner_image.astype(np.uint8)
+  boundary_image = boundary_image.astype(np.uint8)
+  return boundary(blur_alpha, boundary_image, boundary_list, inner_image, inner_list)
 
 
 # example on how to use separate_boundaries
-thing = separate_boundaries("texture2.jpg", 6, .01, 0.95) # separates with blur sigma=6, with all pixels between .01 and .95 as boundary pixels
-print(thing.inner_list) # example for getting list of all pixels of texture not in boundary
-skio.imshow(thing.boundary_img) # example for getting boundary images
-skio.show()
+# thing = separate_boundaries("texture2.jpg", 6) # separates with blur sigma=6, with all pixels between .01 and .95 as boundary pixels
+# print(thing.inner_list) # example for getting list of all pixels of texture not in boundary
+# skio.imshow(thing.boundary_img) # example for getting boundary images
+# skio.show()
