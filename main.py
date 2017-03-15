@@ -73,18 +73,27 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
     Z_src = skio.imread(src_texture)
     Z_src = np.round(rescale(Z_src, 100 / Z_src.shape[0], preserve_range=True)).astype(np.uint8)
     Z_alpha = 255 - skio.imread("texture_alpha.jpg", as_grey=True).astype(np.uint8)
-    Z_alpha = Z_alpha.reshape((Z_alpha.shape[0], Z_alpha.shape[1], 1))
 
-    Z_src = np.append(Z_src, Z_alpha, 2)
-    Z_flat = Z_src.reshape((Z_src[:, :, 0].size, 4))
+    Z_alpha = Z_alpha.reshape((Z_alpha.shape[0], Z_alpha.shape[1], 1))
+    Z_blurred_alpha = np.zeros((Z_src.shape[0], Z_src.shape[1], 1), dtype=np.uint8) + 255
+    Z_temporal_rgb = np.zeros((Z_src.shape[0], Z_src.shape[1], 4), dtype=np.uint8)
+
+    Z_src = np.append(np.append(np.append(Z_src, Z_alpha, 2), Z_blurred_alpha, 2), Z_temporal_rgb, 2)
+    Z_flat = Z_src.reshape((Z_src[:, :, 0].size, Z_src.shape[2]))
 
     # Construct output image, aka X
     out = np.zeros((200, 200, 3), dtype=np.uint8)
     out_alpha = 255 - skio.imread("target_alpha.jpg", as_grey=True).astype(np.uint8)
-    out_alpha = out_alpha.reshape((out_alpha.shape[0], out_alpha.shape[1], 1))
 
-    out = np.append(out, out_alpha, 2)
-    # out_flat = out.reshape((out[:, :, 0].size, 4))
+    out_alpha = out_alpha.reshape((out_alpha.shape[0], out_alpha.shape[1], 1))
+    out_blurred_alpha = np.zeros((out.shape[0], out.shape[1], 1), dtype=np.uint8) + 255
+    out_temporal_rgb = np.zeros((out.shape[0], out.shape[1], 4), dtype=np.uint8)
+
+    out = np.append(np.append(np.append(out, out_alpha, 2), out_blurred_alpha, 2), out_temporal_rgb, 2)
+    out_flat = out.reshape((out[:, :, 0].size, out.shape[2]))
+
+    print(out.shape)
+    print(Z_src.shape)
 
     X_patches = construct_nbhds(False, out.shape, nbhd_width)
     Z_patches = construct_nbhds(True, Z_src.shape, nbhd_width)
@@ -94,14 +103,14 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
         patch.set_nn(np.random.choice(Z_patches, 1)[0])
 
     # Patches in src will not change, so can pull outside of loop
-    Z_patches_for_NN_query = np.ndarray((len(Z_patches), nbhd_width ** 2, 4), dtype=np.uint8)
+    Z_patches_for_NN_query = np.ndarray((len(Z_patches), nbhd_width ** 2, Z_src.shape[2]), dtype=np.uint8)
     for k in range(len(Z_patches)):
         Z_patches_for_NN_query[k] = Z_flat[Z_patches[k].pixel_indices]
 
     Z_patches_for_NN_query = Z_patches_for_NN_query.reshape(
         (Z_patches_for_NN_query.shape[0], Z_patches_for_NN_query.shape[1] * Z_patches_for_NN_query.shape[2]), order='F')
 
-    N = 20  # number of iterations
+    N = 5  # number of iterations
     for i in range(N):
         print("iteration: {0}".format(i))
         diags = np.zeros((out.shape[0] * out.shape[1], 4))  # just the diagonals of the matrix A
@@ -112,16 +121,15 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
         # vector. At the same time, for the corresponding nearest neighbor output patch pixel, put that pixel value in the
         # same index in the b vector.
         for x_patch in X_patches:
-            z_pixels = Z_flat[x_patch.nn_patch.pixel_indices]
+            z_pixels = Z_flat[x_patch.nn_patch.pixel_indices, 0:4]
             # increment the diagonals of A
             diags[x_patch.pixel_indices] += 1
             # update the b vector
             b[x_patch.pixel_indices] += z_pixels
 
-        A = scipy.sparse.spdiags(diags.flatten('F'), 0, 4 * out.shape[0] * out.shape[1],
-                                 4 * out.shape[0] * out.shape[1], 'csr')
+        A = scipy.sparse.spdiags(diags.flatten('F'), 0, 4 * out.shape[0] * out.shape[1], 4 * out.shape[0] * out.shape[1], 'csr')
         flattened_sol = scipy.sparse.linalg.spsolve(A, b.flatten('F'))
-        updated_image = flattened_sol.reshape(b.shape, order='F').reshape(out.shape).astype(np.uint8)
+        updated_image = flattened_sol.reshape(b.shape, order='F').reshape((out.shape[0], out.shape[1], 4)).astype(np.uint8)
 
         # Follow rest of algorithm (1) in the paper:
         # Compute the nearest neighbors of updated_image
@@ -130,10 +138,11 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
         # That is, for each source patch, z_p we find a target patch x_q that has minimal distance.
 
         # Fit a nn field to the new updated image space
-        NNF = np.ndarray((len(X_patches), nbhd_width ** 2, 4), dtype=np.uint8)  # NN to fit scipy library
+        NNF = np.ndarray((len(X_patches), nbhd_width ** 2, out.shape[2]), dtype=np.uint8)  # NN to fit scipy library
         for k in range(len(X_patches)):
             X_patches[k].nn_patch = None
-            NNF[k] = updated_image.reshape((updated_image[:, :, 0].size, 4))[X_patches[k].pixel_indices]
+            NNF[k, :, 0:4] = updated_image.reshape((updated_image[:, :, 0].size, 4))[X_patches[k].pixel_indices]
+            NNF[k, :, 4:] = out_flat[X_patches[k].pixel_indices, 4:]
 
         NNF = NNF.reshape((NNF.shape[0], NNF.shape[1] * NNF.shape[2]), order='F')
         nbrs = NearestNeighbors(n_neighbors=NNF.shape[0], algorithm='auto', metric=dist_metric).fit(NNF)
@@ -168,16 +177,16 @@ def main(nbhd_width=31, src_texture='texture.jpg'):
                             R -= 1
                             break
 
-        out = updated_image
+        out[:, :, 0:4] = updated_image
         # If updated neighbors is the same as current neighbors, then exit the loop and set the output image to the
         # updated image
 
     # save the image
     fname = 'output.jpg'
-    skio.imsave(fname, out)
+    skio.imsave(fname, out[:,:,0:4])
 
     # display the image
-    skio.imshow(out)
+    skio.imshow(out[:,:,0:4])
     skio.show()
 
 
